@@ -1,10 +1,10 @@
 /*
 Required Variables:
 
-  backends:         an array of backends to load. 
+  backends:         an array of backends to load.
                     Must include either "./backends/gossip_girl" if the file was copied directly.
                     Or simply include "gossip_girl" if it was installed via npm.
-                
+
 
   gossip_girl:      an array of hashes of the for host: and port:
                     that details other statsd servers to which the received
@@ -16,8 +16,15 @@ Optional Variables:
 
   flushInterval:    interval (in ms) to send data to downstream statsd's
 
-  dumpMessages:     if set to true, will print out a message on each flush
+  flushInBatches:   if set to true, will batch multiple metrics into bigger packets for downstream statsd's
 
+  flushMaxSize:     max size of one UDP packet for batched metrics.
+                    Applicable only if flushInBatches=true.
+                    Default: 2048.
+
+  debug:            if set to true, will print additional debug messages
+
+  dumpMessages:     if set to true, will print out a message on each flush
 
 */
 {
@@ -31,5 +38,7 @@ Optional Variables:
     }
   ],
   "flushInterval": 1000,
-  "dumpMessages": true 
+  "flushInBatches": true,
+  "flushMaxSize": 16384,
+  "dumpMessages": true
 }
