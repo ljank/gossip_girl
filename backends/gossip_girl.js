@@ -5,29 +5,40 @@ function GossipGirl(startupTime, config, emitter) {
   var self = this
   self.config = config.gossip_girl || []
   self.statsd_config = config
-  self.ignorable = [ "statsd.packets_received", "statsd.bad_lines_seen", "statsd.packet_process_time" ]
+  self.flush_in_batches = !!config.flushInBatches // boolean
+  self.flush_max_size = config.flushMaxSize || 1024 // in bytes
+  self.ignorable = [ "statsd.packets_received", "statsd.bad_lines_seen", "statsd.packet_process_time", "statsd.timestamp_lag" ]
   self.sock = dgram.createSocket("udp4")
 
   emitter.on('flush', function(time_stamp, metrics) { self.process(time_stamp, metrics); })
 }
 
-GossipGirl.prototype.gossip = function(packet, host, port) {
-  var self = this
-  self.sock.send(packet, 0, packet.length, port, host, function(err,bytes) {
-    if (err) {
-      console.log(err)
-    }
-  })
+GossipGirl.prototype.gossip = function(packet) {
+  var self = this,
+      buffer = new Buffer(packet),
+      hosts = self.config
+
+  for (var i = 0; i < hosts.length; i++) {
+    self.sock.send(buffer, 0, buffer.length, hosts[i].port, hosts[i].host, function(err, bytes) {
+      if (err) {
+        console.log(err)
+      }
+    })
+  }
 }
 
 GossipGirl.prototype.format = function (key, value, suffix) {
-  return new Buffer("'" + key + "':" + value + "|" + suffix)
+  return "'" + key + "':" + value + "|" + suffix
 }
 
 GossipGirl.prototype.process = function(time_stamp, metrics) {
-  var self = this
-  hosts = self.config
-  var stats, packet
+  var self = this,
+      stats,
+      packet = "",
+      nextMetric,
+      metricValues,
+      metricsSent = 0,
+      packetsSent = 0
 
   var stats_map = {
     counters: { data: metrics.counters, suffix: "c",  name: "counter" },
@@ -35,26 +46,49 @@ GossipGirl.prototype.process = function(time_stamp, metrics) {
     timers:   { data: metrics.timers,   suffix: "ms", name: "timer" }
   }
 
-  for (var i = 0; i < hosts.length; i++) {
-    for (type in stats_map) {
-      stats = stats_map[type]
-      for (key in stats.data) {
-        if (self.ignorable.indexOf(key) >= 0) continue
+  for (type in stats_map) {
+    stats = stats_map[type]
 
-        if(type == 'timers') {
-          metric_data = stats.data[key]
-        } else {
-          metric_data = [stats.data[key]]
+    for (key in stats.data) {
+      if (self.ignorable.indexOf(key) >= 0) continue
+
+      if (type == 'timers') {
+        metricValues = stats.data[key]
+      } else {
+        metricValues = [stats.data[key]]
+      }
+
+      for (var i = 0; i < metricValues.length; i++) {
+        nextMetric = self.format(key, metricValues[i], stats.suffix)
+        metricsSent++
+
+        if (self.statsd_config.dumpMessages) {
+          util.log ("Gossiping about " + stats.name + ": " + nextMetric)
         }
-        for(var j = 0; j < metric_data.length; j++) {
-          packet = self.format(key, metric_data[j], stats.suffix)
-          if (self.statsd_config.dumpMessages) {
-            util.log ("Gossiping about " + stats.name + ": " + packet)
+
+        if (self.flush_in_batches) {
+          if (packet.length + 1 + nextMetric.length > self.flush_max_size) {
+            self.gossip(packet)
+            packet = nextMetric;
+            packetsSent++
+          } else {
+            packet = packet.length > 0 ? packet + "\n" + nextMetric : nextMetric;
           }
-          self.gossip(packet, hosts[i].host, hosts[i].port)
+        } else {
+          self.gossip(nextMetric);
+          packetsSent++
         }
       }
     }
+  }
+
+  if (packet.length > 0) {
+    self.gossip(packet);
+    packetsSent++;
+  }
+
+  if (self.statsd_config.debug) {
+    util.log ("Gossiping: " + metricsSent + " stats in " + packetsSent + " packets");
   }
 }
 
@@ -63,7 +97,16 @@ GossipGirl.prototype.stop = function(cb) {
   cb();
 };
 
+var instance;
+
 exports.init = function(startupTime, config, events) {
-  var instance = new GossipGirl(startupTime, config, events)
-  return true
-}
+  instance = new GossipGirl(startupTime, config, events);
+  return true;
+};
+
+exports.stop = function(cb) {
+  if(instance) {
+    instance.stop(cb);
+    instance = null;
+  }
+};
